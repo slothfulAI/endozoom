@@ -265,7 +265,7 @@ def main(height: int, width: int, prompt: str, iterations: int, frames_per_itera
         for frame in range(frames_per_iterations):
             progress = frame / frames_per_iterations
 
-            # Linear scaling/factor does not create a realstic zoom as a contant change on a small image
+            # Linear scaling/factor does not create a realistic zoom as a contant change on a small image
             # is visible fastr. We therefor need a inverted quadratic zoom factor
             zoom_factor = zoom_factor_start - ((1 - (1 - progress) ** 2) * (zoom_factor_start - 1))
 
