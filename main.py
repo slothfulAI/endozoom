@@ -203,10 +203,10 @@ def generate_images(prompt, iterations, scaling, size, api_key, temp_dir=Path("o
         print("+ Adding outpainting")
         output_image_name = temp_dir / f"frame_{i}.png"
         output_image_name_upscaled = temp_dir / f"frame_{i}_upscaled.png"
-        edit_image(prompt, resized_image_name, mask_image_name, output_image_name, edit_image)
+        edit_image(prompt, resized_image_name, mask_image_name, output_image_name, api_key)
 
         print("+ Upscaling")
-        upscale(output_image_name, output_image_name_upscaled, upscale_width)
+        upscale(output_image_name, output_image_name_upscaled, upscale_width, api_key)
 
         images.append(output_image_name_upscaled)
         init_image = output_image_name
