@@ -1,19 +1,35 @@
 import os
 import sys
 
+from dataclasses import dataclass
 from pathlib import Path
 import click
+import shutil
 import numpy as np
 import requests
 import base64
 import cv2
+
+@dataclass
+class Image:
+    width: int
+    height: int
+    path: Path = Path("temp/init.png")  # Default value for path
+
+    def ratio(self) -> float:
+        return self.width/self.height
+
+    @classmethod
+    def create_default_image(cls):
+        return cls(width=896, height=512)  # Set default values for width and height as needed
+
 
 engine_id = "stable-diffusion-xl-beta-v2-2-2"
 upscale_engine_id = "esrgan-v1-x2plus"
 
 api_host = os.getenv('API_HOST', 'https://api.stability.ai')
 
-def new_image(prompt: str, image_name: Path, heigh: int, width: int, api_key, sampler="K_EULER", steps=40):
+def get_new_image_from_ai_generator(prompt: str, image: Image, api_key, sampler="K_EULER", steps=40):
     if api_key is None:
         raise Exception("Missing Stability API key.")
 
@@ -32,8 +48,8 @@ def new_image(prompt: str, image_name: Path, heigh: int, width: int, api_key, sa
             ],
             "cfg_scale": 8,
             "sampler": "K_EULER",
-            "height": heigh,
-            "width": width,
+            "height": image.height,
+            "width": image.width,
             "samples": 1,
             "steps": steps
         },
@@ -44,7 +60,7 @@ def new_image(prompt: str, image_name: Path, heigh: int, width: int, api_key, sa
 
     data = response.json()
 
-    with open(image_name, "wb") as f:
+    with open(image.path, "wb") as f:
         image_data = base64.b64decode(data["artifacts"][0]["base64"])
 
         f.write(image_data)
@@ -97,8 +113,9 @@ def edit_image(prompt, input_image, mask_image, output_image, api_key, sampler="
         f.write(image_data)
 
 
-# Upscale an image using stable diffiusion api (can also be done locally)
 def upscale(input_image: Path, output_image: Path, new_width, api_key):
+    '''Upscale an image using stable diffusion api (can also be done locally)'''
+
     response = requests.post(
         f"{api_host}/v1/generation/{upscale_engine_id}/image-to-image/upscale",
         headers={
@@ -113,27 +130,30 @@ def upscale(input_image: Path, output_image: Path, new_width, api_key):
         }
     )
 
+    if response.status_code != 200:
+        raise Exception("Non-200 response: " + str(response.text))
+
     with open(output_image, "wb") as f:
         f.write(response.content)
 
 
 # TODO: This function does WAY to much. Split it up into smaller functions
-def insert_center_and_mask(img: np.ndarray, final_image: (int, int)) -> (np.ndarray, np.ndarray, float, float):
-    final_image_height, final_image_width = final_image
-    final_image_center = (final_image_height // 2, final_image_width // 2)
-
-    # get diemensions of image
-    height, width = img.shape[:2]
+def insert_center_and_mask(img: np.ndarray, final_image: Image) -> (np.ndarray, np.ndarray, float, float):
+    # get dimensions of image
+    height, width, _ = img.shape
     ratio = width / height
 
+    # get center point of final image
+    final_image.center = (final_image.height // 2, final_image.width // 2)
+
     # Create a mask with correct size
-    new_img = np.zeros((final_image_height, final_image_width, 3), dtype=np.uint8)
-    mask = np.full((final_image_height, final_image_width, 3), (255, 255, 255), dtype=np.uint8)
+    new_img = np.zeros((final_image.height, final_image.width, 3), dtype=np.uint8)
+    mask = np.full((final_image.height, final_image.width, 3), (255, 255, 255), dtype=np.uint8)
 
     # Add the scaled image to the new image (with black background)
-    start_y = (final_image_height - height) // 2
-    start_x = (final_image_width - width) // 2
-    new_img[start_y:start_y+height, start_x:start_x+width] = img
+    start_y = (final_image.height - height) // 2
+    start_x = (final_image.width - width) // 2
+    new_img[start_y:start_y + height, start_x:start_x + width] = img
 
     # Draw the mask ellipse used for outpainting
     ax = int(width * 0.5)
@@ -143,7 +163,7 @@ def insert_center_and_mask(img: np.ndarray, final_image: (int, int)) -> (np.ndar
     # mask[start_y:start_y+height, start_x:start_x+width] = img
 
     mask = cv2.ellipse(img = mask,
-                       center=(final_image_center[1], final_image_center[0]),
+                       center=final_image.center,
                        axes=(ax, by),
                        angle = 0,
                        startAngle=0,
@@ -157,9 +177,9 @@ def insert_center_and_mask(img: np.ndarray, final_image: (int, int)) -> (np.ndar
     height_prime = int(2 * np.sqrt((ax**2 * by**2) / (by**2 * ratio**2 + ax**2)))
     width_prime = int(ratio * height_prime)
 
-    zoom_factor_start = 1 / (height_prime / final_image_height)
+    zoom_factor_start = 1 / (height_prime / final_image.height)
     zoom_factor_end = 1 / (height_prime / height)
-    zoom_factor_request = 1 / (height / final_image_height)
+    zoom_factor_request = 1 / (height / final_image.height)
 
     print (f"- Zoom factor start: {zoom_factor_start}, end: {zoom_factor_end}, request: {zoom_factor_request}")
 
@@ -168,22 +188,32 @@ def insert_center_and_mask(img: np.ndarray, final_image: (int, int)) -> (np.ndar
 
     return new_img, mask, zoom_factor_start, zoom_factor_end
 
+def get_upscale_image_max_width(image: Image) -> int:
+    '''Return the maximum upscale width that does not exceed the API's output image pixel limit'''
+    UPSCALE_IMAGE_OUTPUT_LIMIT = 4194304  # Defined in https://platform.stability.ai/docs/features/image-upscaling
 
-def generate_images(prompt, iterations, scaling, size, api_key, temp_dir=Path("output")):
+    im = cv2.imread(str(image.path))
+    h, w, _ = im.shape
+
+    upscale_width = 2560                  # Start with this width optimistically and scale down
+    upscale_height = (upscale_width * h) / w
+
+    while upscale_width * upscale_height > UPSCALE_IMAGE_OUTPUT_LIMIT:
+        upscale_width *= 0.8              # scale width down 20% and try again
+        upscale_height = (upscale_width * h) / w
+
+    return upscale_width
+
+
+def generate_images(init_image: Image, prompt: str, iterations: int, scaling: int, api_key: str, temp_dir=Path("output")):
+    '''Generate a series of images based on a provided seed image'''
     images = []
     zoom_factor_start, zoom_factor_end = None, None
 
-    # Calcualte upscale size
-    ratio = size[1] / size[0]
-    upscale_width = 2560
-
-    print("Generating initial image...")
-    init_image = temp_dir / "init.png"
+    upscale_width = get_upscale_image_max_width(init_image)
     init_image_upscaled = temp_dir / "init_upscaled.png"
-    new_image(prompt, init_image, size[0], size[1], api_key)
-
     print("Upscaling initial image...")
-    upscale(init_image, init_image_upscaled, upscale_width, api_key)
+    upscale(init_image.path, init_image_upscaled, upscale_width, api_key)
 
     images.append(init_image_upscaled)
 
@@ -191,8 +221,8 @@ def generate_images(prompt, iterations, scaling, size, api_key, temp_dir=Path("o
         print("*"*80)
         print(f"Processing image {i+1}/{iterations}")
         print("+ Scaling and creating mask")
-        resized_image = resize_image(cv2.imread(str(init_image)), scaling)
-        resized_image, mask_image, zoom_factor_start, zoom_factor_end = insert_center_and_mask(resized_image, size)
+        resized_image = resize_image(cv2.imread(str(init_image.path)), scaling)
+        resized_image, mask_image, zoom_factor_start, zoom_factor_end = insert_center_and_mask(resized_image, init_image)
 
         mask_image_name = temp_dir / f"frame_{i}_mask.png"
         resized_image_name = temp_dir / f"frame_{i}_resized.png"
@@ -209,13 +239,12 @@ def generate_images(prompt, iterations, scaling, size, api_key, temp_dir=Path("o
         upscale(output_image_name, output_image_name_upscaled, upscale_width, api_key)
 
         images.append(output_image_name_upscaled)
-        init_image = output_image_name
+        init_image.path = output_image_name
 
     return images, zoom_factor_start, zoom_factor_end
 
-
-# TODO: Plase the previosu image into the zoomed image for better resolution in the transition
-def crop_and_zoom(image, factor, resize):
+# TODO: Place the previous image into the zoomed image for better resolution in the transition
+def crop_and_zoom(image: np.ndarray, factor: float, resize):
 
     # get the original dimensions
     height, width = image.shape[:2]
@@ -239,34 +268,43 @@ def crop_and_zoom(image, factor, resize):
 @click.option("--frames-per-iterations", show_default=True, default=120, help="Number of frames to generate per image.")
 @click.option("--fps", show_default=True, default=30, help="Frames per second in video.")
 @click.option("--stable-diffusion-api-key", envvar="STABILITY_API_KEY", help="API key for the stable diffiusion api. Should be set using the environment variable STABILITY_API_KEY for security")
+@click.option("--initial-image", type=click.Path(exists=True, file_okay=True, dir_okay=False), required=False, help="Input image for use as the seed of video generation.")
 @click.argument("video-output-file", type=click.Path(exists=False, writable=True, dir_okay=False))
 def main(height: int, width: int, prompt: str, iterations: int, frames_per_iterations: int, fps: int,
-         scaling: int, stable_diffusion_api_key: str, video_output_file: str):
+         scaling: int, stable_diffusion_api_key: str, initial_image: str, video_output_file: str):
 
     temp_dir = Path("temp")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    image_size = (height, width)
 
-    images, zoom_factor_start, zoom_factor_end = generate_images(prompt, iterations, scaling, image_size,
-                                                                 stable_diffusion_api_key, temp_dir)
+    image = Image(width, height)
 
-    print(f"Images generates: {len(images)}, Zoom factor start: {zoom_factor_start}, end: {zoom_factor_end}")
+    # Determine whether to use provided images or generated image from a prompt
+    if initial_image:
+        init_image = Path(initial_image)
+        if not init_image.exists():
+            raise Exception(f"Provided input image not found on {init_image} !")
+        shutil.copy(init_image, image.path)
 
+    else:
+        print("Generating initial image from prompt...")
+        get_new_image_from_ai_generator(prompt, image, stable_diffusion_api_key)
+
+    images, zoom_factor_start, zoom_factor_end = generate_images(image, prompt, iterations, scaling,
+                                                                stable_diffusion_api_key, temp_dir)
 
     # Initiate video writer
     fourcc = cv2.VideoWriter_fourcc(*'MP4V')
-    out = cv2.VideoWriter(video_output_file, fourcc, fps, (image_size[1], image_size[0]))
-
+    out = cv2.VideoWriter(video_output_file, fourcc, fps, (image.width, image.height))
     for i, image_name in enumerate(images):
         print(f"{i+1/len(images)}: Processing image {image_name}.")
 
-        image = cv2.imread(str(image_name))
+        img = cv2.imread(str(image_name))
 
         for frame in range(frames_per_iterations):
             progress = frame / frames_per_iterations
 
-            # Linear scaling/factor does not create a realistic zoom as a contant change on a small image
-            # is visible fastr. We therefor need a inverted quadratic zoom factor
+            # Linear scaling/factor does not create a realistic zoom as a constant change on a small image
+            # is visible faster. We therefore need an inverted quadratic zoom factor
             zoom_factor = zoom_factor_start - ((1 - (1 - progress) ** 2) * (zoom_factor_start - 1))
 
             # This is not ideal. We should instead modify the loop to go between (zoom_factor_start, zoom_factor_end)
@@ -274,7 +312,7 @@ def main(height: int, width: int, prompt: str, iterations: int, frames_per_itera
                 sys.stdout.write("\n")
                 break
 
-            output = crop_and_zoom(image, zoom_factor, (image_size[1], image_size[0]))
+            output = crop_and_zoom(img, zoom_factor, (image.width, image.height))
             sys.stdout.write(".")
             sys.stdout.flush()
 
