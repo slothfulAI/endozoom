@@ -19,6 +19,12 @@ class Image:
     def ratio(self) -> float:
         return self.width/self.height
 
+    def size(self) -> int:
+        return self.width * self.height
+
+    def center(self) -> (int, int):
+        return (self.width // 2, self.height // 2)
+
     @classmethod
     def create_default_image(cls):
         return cls(width=896, height=512)  # Set default values for width and height as needed
@@ -143,9 +149,6 @@ def insert_center_and_mask(img: np.ndarray, final_image: Image) -> (np.ndarray, 
     height, width, _ = img.shape
     ratio = width / height
 
-    # get center point of final image
-    final_image.center = (final_image.height // 2, final_image.width // 2)
-
     # Create a mask with correct size
     new_img = np.zeros((final_image.height, final_image.width, 3), dtype=np.uint8)
     mask = np.full((final_image.height, final_image.width, 3), (255, 255, 255), dtype=np.uint8)
@@ -163,7 +166,7 @@ def insert_center_and_mask(img: np.ndarray, final_image: Image) -> (np.ndarray, 
     # mask[start_y:start_y+height, start_x:start_x+width] = img
 
     mask = cv2.ellipse(img = mask,
-                       center=final_image.center,
+                       center=final_image.center(),
                        axes=(ax, by),
                        angle = 0,
                        startAngle=0,
@@ -193,16 +196,18 @@ def get_upscale_image_max_width(image: Image) -> int:
     UPSCALE_IMAGE_OUTPUT_LIMIT = 4194304  # Defined in https://platform.stability.ai/docs/features/image-upscaling
 
     im = cv2.imread(str(image.path))
-    h, w, _ = im.shape
+    initial_image_height, initial_image_width, _ = im.shape
 
     upscale_width = 2560                  # Start with this width optimistically and scale down
-    upscale_height = (upscale_width * h) / w
+    upscale_height = (upscale_width * initial_image_height) / initial_image_width
 
-    while upscale_width * upscale_height > UPSCALE_IMAGE_OUTPUT_LIMIT:
-        upscale_width *= 0.8              # scale width down 20% and try again
-        upscale_height = (upscale_width * h) / w
+    # Calculate the scaling factor to ensure the product of upscaled width and height does not exceed the limit
+    scaling_factor = min(1, (UPSCALE_IMAGE_OUTPUT_LIMIT / (initial_image_height * initial_image_width)) ** 0.5)
 
-    return upscale_width
+    # Calculate the final upscale width
+    final_upscale_width = initial_image_width * scaling_factor
+
+    return int(final_upscale_width)
 
 
 def generate_images(init_image: Image, prompt: str, iterations: int, scaling: int, api_key: str, temp_dir=Path("output")):
