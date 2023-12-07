@@ -195,17 +195,14 @@ def get_upscale_image_max_width(image: Image) -> int:
     '''Return the maximum upscale width that does not exceed the API's output image pixel limit'''
     UPSCALE_IMAGE_OUTPUT_LIMIT = 4194304  # Defined in https://platform.stability.ai/docs/features/image-upscaling
 
-    im = cv2.imread(str(image.path))
-    initial_image_height, initial_image_width, _ = im.shape
-
     upscale_width = 2560                  # Start with this width optimistically and scale down
-    upscale_height = (upscale_width * initial_image_height) / initial_image_width
+    upscale_height = (upscale_width * image.height) / image.width
 
     # Calculate the scaling factor to ensure the product of upscaled width and height does not exceed the limit
-    scaling_factor = min(1, (UPSCALE_IMAGE_OUTPUT_LIMIT / (initial_image_height * initial_image_width)) ** 0.5)
+    scaling_factor = min(1, (UPSCALE_IMAGE_OUTPUT_LIMIT / (upscale_height * upscale_width)) ** 0.5)
 
     # Calculate the final upscale width
-    final_upscale_width = initial_image_width * scaling_factor
+    final_upscale_width = upscale_width * scaling_factor
 
     return int(final_upscale_width)
 
@@ -289,6 +286,8 @@ def main(height: int, width: int, prompt: str, iterations: int, frames_per_itera
         if not init_image.exists():
             raise Exception(f"Provided input image not found on {init_image} !")
         shutil.copy(init_image, image.path)
+        im = cv2.imread(str(image.path))
+        image.height, image.width, _ = im.shape
 
     else:
         print("Generating initial image from prompt...")

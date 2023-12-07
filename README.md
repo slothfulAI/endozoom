@@ -42,12 +42,17 @@ sh# python main.py \
 Provide an initial image
 ```
 sh# python main.py \
- --prompt "A dystopian city surrounded by desert. Cats are the only living creatures seen roaming the land" \
+ --prompt "A dystopian city surrounded by desert. Cats are the only living creatures seen roaming the land. In the style of anime water painting" \
  --fps 30 \
  --iterations 30 \
  --initial-image images/ai-image.png
  output.mp4
 ```
+
+Notes on input image size: the SDXL v2.2.2 API we use have the following requirements
+- Width and Height MUST be above 128
+- Only ONE height or width may be above 512 (512x768 is valid but 578x768 is not)
+- Maximum dimensions supported are 512x896 or 896x512
 
 [![Underwater City Zoom](https://markdown-videos-api.jorgenkh.no/url?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DR8WQQYMIcqA)](https://www.youtube.com/watch?v=R8WQQYMIcqA)
 
